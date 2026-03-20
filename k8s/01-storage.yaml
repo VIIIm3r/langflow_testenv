@@ -1,0 +1,26 @@
+# PersistentVolumeClaim for Langflow data (SQLite DB + flow_ids.json)
+# Uses EBS via the aws-ebs-csi-driver addon
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: langflow-ebs
+  namespace: langflow-testenv
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer   # provision in same AZ as the pod
+reclaimPolicy: Retain                     # keep data on pod deletion
+parameters:
+  type: gp3
+  encrypted: "true"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: langflow-data
+  namespace: langflow-testenv
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: langflow-ebs
+  resources:
+    requests:
+      storage: 5Gi

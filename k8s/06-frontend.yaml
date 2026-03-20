@@ -1,0 +1,53 @@
+# ── Frontend Deployment ───────────────────────────────────────────────────────
+# Image is built locally and pushed to ECR by deploy.sh
+# The FRONTEND_IMAGE placeholder is replaced by deploy.sh at apply time
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: langflow-testenv
+  labels:
+    app: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: FRONTEND_IMAGE      # replaced by deploy.sh
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 300m
+              memory: 128Mi
+---
+# Internal ClusterIP — access via kubectl port-forward
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: langflow-testenv
+spec:
+  selector:
+    app: frontend
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP

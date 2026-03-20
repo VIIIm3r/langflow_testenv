@@ -1,0 +1,154 @@
+# ── Traffic Simulator Deployment ──────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simulator
+  namespace: langflow-testenv
+  labels:
+    app: simulator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: simulator
+  template:
+    metadata:
+      labels:
+        app: simulator
+    spec:
+      initContainers:
+        # Wait for bootstrap to complete (flow_ids.json must exist)
+        - name: wait-for-bootstrap
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for bootstrap..."
+              until [ -f /data/flow_ids.json ]; do
+                echo "  flow_ids.json not found yet, sleeping 10s"
+                sleep 10
+              done
+              echo "Bootstrap complete — starting simulator."
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      containers:
+        - name: simulator
+          image: python:3.11-slim
+          command:
+            - sh
+            - -c
+            - |
+              pip install requests faker --quiet
+              python /sim/simulate.py
+          envFrom:
+            - configMapRef:
+                name: langflow-config
+            - secretRef:
+                name: langflow-secret
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: sim-script
+              mountPath: /sim
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: langflow-data
+        - name: sim-script
+          configMap:
+            name: simulator-script
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: simulator-script
+  namespace: langflow-testenv
+data:
+  simulate.py: |
+    import json, os, random, time, traceback, urllib.request, urllib.error
+    from datetime import datetime
+
+    BASE  = os.environ.get("LANGFLOW_URL", "http://langflow:7860")
+    USER  = os.environ.get("LANGFLOW_USER", "admin")
+    PASS  = os.environ.get("LANGFLOW_PASS", os.environ.get("LANGFLOW_SUPERUSER_PASSWORD","testpass123"))
+
+    def ts(): return datetime.utcnow().strftime("%H:%M:%S")
+    def log(tag, msg, ok=True): print(f"[{ts()}] {'✓' if ok else '✗'} [{tag}] {msg}", flush=True)
+    def jitter(base, spread=0.4): return base * (1 + random.uniform(-spread, spread))
+
+    def http(method, path, body=None, token=None, timeout=20):
+        url  = f"{BASE}{path}"
+        data = json.dumps(body).encode() if body else None
+        hdrs = {"Content-Type": "application/json"}
+        if token: hdrs["Authorization"] = f"Bearer {token}"
+        req  = urllib.request.Request(url, data=data, headers=hdrs, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e: return e.code, {}
+        except: return 0, {}
+
+    _token, _token_ts = None, 0
+    def get_token():
+        global _token, _token_ts
+        if _token and (time.time() - _token_ts) < 3600: return _token
+        s, r = http("POST", "/api/v1/login", {"username": USER, "password": PASS})
+        if s == 200: _token = r.get("access_token"); _token_ts = time.time(); log("auth","refreshed")
+        return _token
+
+    _flow_ids = None
+    def load_ids():
+        global _flow_ids
+        if _flow_ids: return _flow_ids
+        for _ in range(30):
+            if os.path.exists("/data/flow_ids.json"):
+                with open("/data/flow_ids.json") as f: _flow_ids = json.load(f)
+                return _flow_ids
+            time.sleep(10)
+        raise RuntimeError("flow_ids.json not found")
+
+    MSGS = ["Hello!","What can you do?","Tell me a fact.","How does NLP work?",
+            "Help me draft an email.","What is a LLM?","Explain Docker simply.",
+            "What are API security best practices?","Give me project ideas."]
+    HOOKS = [{"event":"user.signup","user_id":"u_001"},{"event":"order.placed","amount":49.99},
+             {"event":"alert.triggered","severity":"medium"},{"event":"task.completed","id":"t_1"}]
+
+    def run_session(ids):
+        token = get_token()
+        for _ in range(random.randint(3,8)):
+            r = random.random()
+            try:
+                if r < 0.50:
+                    s,_ = http("POST",f"/api/v1/run/{ids['echo_chat']}",
+                               {"input_value":random.choice(MSGS),"input_type":"chat","output_type":"chat"},token=token)
+                    log("chat",f"→ {s}", ok=s in(200,201,202))
+                elif r < 0.75:
+                    s,_ = http("POST",f"/api/v1/build_public_tmp/{ids['echo_chat']}/flow",
+                               {"inputs":[{"input_value":random.choice(MSGS),"components":[]}]})
+                    log("public_build",f"→ {s}", ok=s in(200,201,202))
+                elif r < 0.90:
+                    s,_ = http("POST",f"/api/v1/webhook/{ids['webhook_logger']}",
+                               random.choice(HOOKS),token=token)
+                    log("webhook",f"→ {s}", ok=s in(200,201,202))
+                else:
+                    s,r2 = http("GET","/api/v1/version")
+                    log("introspect",f"version={r2.get('version','?')} → {s}", ok=s==200)
+            except: log("error",traceback.format_exc(),ok=False)
+            time.sleep(jitter(random.uniform(2,12)))
+
+    ids = load_ids()
+    log("sim","Starting traffic generation")
+    n = 0
+    while True:
+        try: run_session(ids); n+=1; log("sim",f"Session {n} done")
+        except: log("sim",traceback.format_exc(),ok=False)
+        time.sleep(jitter(random.uniform(15,90)))

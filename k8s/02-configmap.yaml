@@ -1,0 +1,26 @@
+# Shared configuration — consumed by Langflow, bootstrapper, and simulator
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: langflow-config
+  namespace: langflow-testenv
+data:
+  LANGFLOW_AUTO_LOGIN:        "true"
+  LANGFLOW_SUPERUSER:         "admin"
+  LANGFLOW_LOG_LEVEL:         "info"
+  LANGFLOW_DATABASE_URL:      "sqlite:////data/langflow.db"
+  LANGFLOW_URL:               "http://langflow:7860"
+  LANGFLOW_USER:              "admin"
+---
+# Sensitive values — in a real environment use AWS Secrets Manager
+# with External Secrets Operator instead of a plain Secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: langflow-secret
+  namespace: langflow-testenv
+type: Opaque
+stringData:
+  LANGFLOW_SUPERUSER_PASSWORD: "testpass123"
+  LANGFLOW_SECRET_KEY:         "test-secret-key-not-for-prod"
+  LANGFLOW_PASS:               "testpass123"

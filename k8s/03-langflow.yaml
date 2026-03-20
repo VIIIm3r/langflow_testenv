@@ -1,0 +1,73 @@
+# ── Langflow 1.8.1 Deployment ─────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: langflow
+  namespace: langflow-testenv
+  labels:
+    app: langflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: langflow
+  strategy:
+    type: Recreate          # required — EBS PVC is ReadWriteOnce
+  template:
+    metadata:
+      labels:
+        app: langflow
+    spec:
+      containers:
+        - name: langflow
+          image: langflowai/langflow:1.8.1
+          ports:
+            - containerPort: 7860
+          envFrom:
+            - configMapRef:
+                name: langflow-config
+            - secretRef:
+                name: langflow-secret
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /api/v1/version
+              port: 7860
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 10
+          livenessProbe:
+            httpGet:
+              path: /api/v1/version
+              port: 7860
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: 1500m
+              memory: 2Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: langflow-data
+---
+# Internal-only ClusterIP service — not reachable outside the cluster
+apiVersion: v1
+kind: Service
+metadata:
+  name: langflow
+  namespace: langflow-testenv
+spec:
+  selector:
+    app: langflow
+  type: ClusterIP
+  ports:
+    - port: 7860
+      targetPort: 7860
+      protocol: TCP

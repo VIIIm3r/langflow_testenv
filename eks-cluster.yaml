@@ -1,0 +1,47 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: langflow-testenv
+  region: us-east-1        # change to your preferred region
+  version: "1.29"
+
+# Internal-only — no public node IPs
+privateCluster:
+  enabled: false           # full private cluster requires extra VPC setup;
+                           # we use private nodegroups + internal services instead
+
+vpc:
+  clusterEndpoints:
+    publicAccess: true     # kubectl access from your machine
+    privateAccess: true    # node-to-API communication stays internal
+
+managedNodeGroups:
+  - name: testenv-nodes
+    instanceType: t3.medium   # 2 vCPU / 4GB — sufficient for Langflow + simulator
+    minSize: 2
+    maxSize: 3
+    desiredCapacity: 2
+    privateNetworking: true   # nodes in private subnets, no public IPs
+    volumeSize: 30
+    labels:
+      role: worker
+    tags:
+      environment: security-research
+      project: langflow-testenv
+
+# IAM — allow nodes to pull from ECR
+iam:
+  withOIDC: true
+  serviceAccounts:
+    - metadata:
+        name: ecr-access
+        namespace: langflow-testenv
+      attachPolicyARNs:
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+
+addons:
+  - name: vpc-cni
+  - name: coredns
+  - name: kube-proxy
+  - name: aws-ebs-csi-driver    # required for PersistentVolumes

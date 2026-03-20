@@ -1,0 +1,144 @@
+# ── Bootstrapper Job ──────────────────────────────────────────────────────────
+# Runs once after Langflow is healthy. Creates and publishes flows.
+# Uses an initContainer to wait for Langflow readiness before running.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bootstrapper
+  namespace: langflow-testenv
+spec:
+  ttlSecondsAfterFinished: 300    # clean up pod 5 min after completion
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        # Wait for Langflow to be ready before bootstrapping
+        - name: wait-for-langflow
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for Langflow..."
+              until wget -qO- http://langflow:7860/api/v1/version > /dev/null 2>&1; do
+                echo "  not ready yet, sleeping 10s"
+                sleep 10
+              done
+              echo "Langflow is ready."
+      containers:
+        - name: bootstrapper
+          image: python:3.11-slim
+          command:
+            - sh
+            - -c
+            - |
+              pip install requests --quiet
+              python /init/bootstrap.py
+          envFrom:
+            - configMapRef:
+                name: langflow-config
+            - secretRef:
+                name: langflow-secret
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: bootstrap-script
+              mountPath: /init
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: langflow-data
+        - name: bootstrap-script
+          configMap:
+            name: bootstrap-script
+---
+# Bootstrap script baked into a ConfigMap so we don't need a custom image
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bootstrap-script
+  namespace: langflow-testenv
+data:
+  bootstrap.py: |
+    #!/usr/bin/env python3
+    import json, os, sys, time, urllib.request, urllib.error
+
+    BASE      = os.environ.get("LANGFLOW_URL", "http://langflow:7860")
+    USER      = os.environ.get("LANGFLOW_USER", "admin")
+    PASS      = os.environ.get("LANGFLOW_PASS", os.environ.get("LANGFLOW_SUPERUSER_PASSWORD", "testpass123"))
+    STATE     = "/data/.bootstrapped"
+    IDS_FILE  = "/data/flow_ids.json"
+
+    def log(msg): print(f"[bootstrap] {msg}", flush=True)
+
+    def request(method, path, body=None, token=None):
+        url  = f"{BASE}{path}"
+        data = json.dumps(body).encode() if body else None
+        hdrs = {"Content-Type": "application/json"}
+        if token: hdrs["Authorization"] = f"Bearer {token}"
+        req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read())
+
+    ECHO_FLOW = {
+        "name": "Echo Chat", "description": "Baseline public flow", "is_component": False,
+        "data": {"nodes": [
+            {"id": "ChatInput-1", "type": "genericNode", "position": {"x": 100, "y": 200},
+             "data": {"type": "ChatInput", "node": {"display_name": "Chat Input", "description": "",
+               "base_classes": ["Message"],
+               "outputs": [{"name": "message", "display_name": "Message", "types": ["Message"]}],
+               "template": {"input_value": {"type": "str", "value": "", "required": False,
+                 "display_name": "Message"}, "_type": "Component"}}}},
+            {"id": "ChatOutput-1", "type": "genericNode", "position": {"x": 500, "y": 200},
+             "data": {"type": "ChatOutput", "node": {"display_name": "Chat Output", "description": "",
+               "base_classes": ["Message"],
+               "template": {"input_value": {"type": "str", "value": "", "required": False,
+                 "display_name": "Message"}, "_type": "Component"}}}}],
+          "edges": [{"source": "ChatInput-1", "target": "ChatOutput-1",
+            "sourceHandle": "ChatInput-1-message", "targetHandle": "ChatOutput-1-input_value"}]}
+    }
+
+    WEBHOOK_FLOW = {
+        "name": "Webhook Logger", "description": "Baseline webhook flow", "is_component": False,
+        "data": {"nodes": [
+            {"id": "Webhook-1", "type": "genericNode", "position": {"x": 100, "y": 200},
+             "data": {"type": "Webhook", "node": {"display_name": "Webhook Input", "description": "",
+               "base_classes": ["Data"],
+               "outputs": [{"name": "output_data", "display_name": "Data", "types": ["Data"]}],
+               "template": {"_type": "Component"}}}},
+            {"id": "ChatOutput-1", "type": "genericNode", "position": {"x": 500, "y": 200},
+             "data": {"type": "ChatOutput", "node": {"display_name": "Chat Output", "description": "",
+               "base_classes": ["Message"],
+               "template": {"input_value": {"type": "str", "value": "", "required": False,
+                 "display_name": "Message"}, "_type": "Component"}}}}],
+          "edges": []}
+    }
+
+    if os.path.exists(STATE):
+        log("Already bootstrapped — skipping."); sys.exit(0)
+
+    log("Authenticating...")
+    resp  = request("POST", "/api/v1/login", {"username": USER, "password": PASS})
+    token = resp["access_token"]
+    log("OK")
+
+    ids = {}
+    for flow in [ECHO_FLOW, WEBHOOK_FLOW]:
+        resp     = request("POST", "/api/v1/flows/", flow, token=token)
+        flow_id  = resp["id"]
+        request("PATCH", f"/api/v1/flows/{flow_id}", {"is_public": True}, token=token)
+        key      = flow["name"].lower().replace(" ", "_")
+        ids[key] = flow_id
+        log(f"Created '{flow['name']}' → {flow_id}")
+
+    with open(IDS_FILE, "w") as f: json.dump(ids, f, indent=2)
+    with open(STATE,    "w") as f: f.write("done\n")
+    log("Bootstrap complete.")

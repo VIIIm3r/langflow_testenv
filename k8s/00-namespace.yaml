@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: langflow-testenv
+  labels:
+    project: langflow-testenv
+    environment: security-research

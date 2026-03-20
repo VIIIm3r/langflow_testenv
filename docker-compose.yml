@@ -1,0 +1,94 @@
+version: "3.9"
+
+services:
+
+  # ─────────────────────────────────────────
+  # Langflow 1.8.1 — the vulnerable target
+  # ─────────────────────────────────────────
+  langflow:
+    image: langflowai/langflow:1.8.1
+    container_name: langflow
+    ports:
+      - "7860:7860"
+    environment:
+      - LANGFLOW_AUTO_LOGIN=true
+      - LANGFLOW_SUPERUSER=admin
+      - LANGFLOW_SUPERUSER_PASSWORD=testpass123
+      - LANGFLOW_SECRET_KEY=test-secret-key-not-for-prod
+      - LANGFLOW_DATABASE_URL=sqlite:////data/langflow.db
+      - LANGFLOW_LOG_LEVEL=info
+    volumes:
+      - langflow-data:/data
+      - ./langflow-init:/app/init:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7860/api/v1/version"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - testnet
+
+  # ─────────────────────────────────────────
+  # Flow bootstrapper — creates & publishes
+  # the demo flows on first startup
+  # ─────────────────────────────────────────
+  bootstrapper:
+    image: python:3.11-slim
+    container_name: bootstrapper
+    depends_on:
+      langflow:
+        condition: service_healthy
+    volumes:
+      - ./langflow-init:/init:ro
+      - langflow-data:/data
+    command: python /init/bootstrap.py
+    networks:
+      - testnet
+    restart: "no"
+
+  # ─────────────────────────────────────────
+  # Frontend — simple chat UI over Langflow
+  # ─────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      langflow:
+        condition: service_healthy
+    environment:
+      - LANGFLOW_URL=http://langflow:7860
+    networks:
+      - testnet
+
+  # ─────────────────────────────────────────
+  # Traffic simulator — mixed realistic load
+  # ─────────────────────────────────────────
+  simulator:
+    image: python:3.11-slim
+    container_name: simulator
+    depends_on:
+      bootstrapper:
+        condition: service_completed_successfully
+    volumes:
+      - ./simulator:/sim:ro
+    command: >
+      sh -c "pip install requests faker --quiet && python /sim/simulate.py"
+    environment:
+      - LANGFLOW_URL=http://langflow:7860
+      - LANGFLOW_USER=admin
+      - LANGFLOW_PASS=testpass123
+    networks:
+      - testnet
+    restart: unless-stopped
+
+volumes:
+  langflow-data:
+
+networks:
+  testnet:
+    driver: bridge

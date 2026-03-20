@@ -1,5 +1,11 @@
 # Langflow 1.8.1 — Cybersec Test Environment
 
+> ⚠️ **SECURITY RESEARCH ENVIRONMENT — DO NOT DEPLOY PUBLICLY**
+>
+> This project is an **intentionally vulnerable** test environment for security research and tooling development. It runs Langflow 1.8.1, which contains a critical unauthenticated RCE vulnerability (CVE-2026-33017). Credentials are hardcoded and not meant to be secure.
+>
+> **Run this only on a local, isolated network. Never expose it to the internet.**
+
 A fully self-contained Docker Compose environment with:
 
 - **Langflow 1.8.1** — the target, with two public flows pre-configured
